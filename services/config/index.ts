@@ -109,6 +109,19 @@ export const handleApiResponse = async (
 ): Promise<ApiResponse<any>> => {
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
+    
+    // Handle standardized error response format from backend
+    // Backend now returns: { success: false, error: { code, message, details }, timestamp }
+    if (errorData.error && errorData.error.code) {
+      throw new ApiException({
+        message: errorData.error.message || response.statusText,
+        code: errorData.error.code || "UNKNOWN_ERROR",
+        status: response.status,
+        details: errorData.error.details || errorData,
+      });
+    }
+    
+    // Fallback for old error format
     throw new ApiException({
       message: errorData.message || response.statusText,
       code: errorData.code || "UNKNOWN_ERROR",
@@ -118,6 +131,19 @@ export const handleApiResponse = async (
   }
 
   const data = await response.json();
+  
+  // Handle standardized success response format from backend
+  // Backend now returns: { success: true, data: ..., message?: ..., timestamp: ... }
+  if (data && typeof data === 'object' && 'success' in data) {
+    return {
+      data: data.data || data,
+      message: data.message,
+      success: data.success !== false,
+      status: response.status,
+    };
+  }
+  
+  // Fallback for old response format (raw data)
   return {
     data: data.data || data,
     message: data.message,

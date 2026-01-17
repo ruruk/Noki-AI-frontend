@@ -43,4 +43,8 @@ export class UserServiceImpl implements UserService {
       formData
     );
   }
+
+  async getAIUsage(): Promise<ApiResponse<any>> {
+    return this.httpClient.get<any>(`${this.baseUrl}/ai-usage`);
+  }
 }

@@ -222,6 +222,9 @@ export default function TodosSidenav({
           project?.source === "Canvas" ? project?.course_code : null;
         const projectDisplay = courseCode ? courseCode : projectTitle;
 
+        // Use is_submitted (correct field name) instead of is_completed
+        const isSubmitted = todo.is_submitted || false;
+
         return {
           id: todo.id,
           title: todo.title || todo.name || "Untitled Todo",
@@ -229,14 +232,11 @@ export default function TodosSidenav({
           projectTitle: projectTitle,
           courseCode: courseCode,
           time: formatTime(todo.due_date || todo.dueDate),
-          completed: todo.is_completed || false,
+          completed: isSubmitted,
           type: "todo" as const,
           dueDate: todo.due_date || todo.dueDate,
           colorHex: project?.color_hex || null,
-          isOverdue: isOverdue(
-            todo.due_date || todo.dueDate,
-            todo.is_completed || false
-          ),
+          isOverdue: isOverdue(todo.due_date || todo.dueDate, isSubmitted),
         };
       });
 
@@ -436,9 +436,9 @@ export default function TodosSidenav({
     todoType: "todo" | "task"
   ) => {
     // Find the current todo/task to check its completion status
-    const currentTodo = todos
-      .flatMap((group) => group.todos)
-      .find((todo) => todo.id === todoId);
+    // Search in all groups (not just filtered) to handle overdue items
+    const allTodos = todos.flatMap((group) => group.todos);
+    const currentTodo = allTodos.find((todo) => todo.id === todoId);
 
     if (!currentTodo) {
       console.error("[Todos Sidenav] Todo/task not found:", todoId);
@@ -446,17 +446,28 @@ export default function TodosSidenav({
     }
 
     const isCurrentlyCompleted = currentTodo.completed;
+    const newCompletedState = !isCurrentlyCompleted;
+
+    // Find the actual group index in the todos array
+    // This handles cases where the item might be in a different group than expected
+    let actualGroupIndex = dayIndex;
+    for (let i = 0; i < todos.length; i++) {
+      if (todos[i].todos.some((todo) => todo.id === todoId)) {
+        actualGroupIndex = i;
+        break;
+      }
+    }
 
     try {
-      // Optimistically update UI
+      // Step 1: Optimistically update UI immediately for better UX
       setTodos((prev) =>
         prev.map((group, idx) =>
-          idx === dayIndex
+          idx === actualGroupIndex
             ? {
                 ...group,
                 todos: group.todos.map((todo) =>
                   todo.id === todoId
-                    ? { ...todo, completed: !todo.completed }
+                    ? { ...todo, completed: newCompletedState }
                     : todo
                 ),
               }
@@ -464,7 +475,35 @@ export default function TodosSidenav({
         )
       );
 
-      // Call backend API to complete/uncomplete
+      // Step 2: Update IndexedDB optimistically (before backend call)
+      const db = getDB();
+      await db.init();
+
+      if (todoType === "todo") {
+        // Get current todo from IndexedDB
+        const todos = await db.getTodos();
+        const todo = todos.find((t: any) => t.id === todoId);
+        if (todo) {
+          // Update IndexedDB optimistically
+          await db.saveTodo({
+            ...todo,
+            is_submitted: newCompletedState,
+          });
+        }
+      } else if (todoType === "task") {
+        // Get current task from IndexedDB
+        const tasks = await db.getTasks();
+        const task = tasks.find((t: any) => t.id === todoId);
+        if (task) {
+          // Update IndexedDB optimistically
+          await db.saveTask({
+            ...task,
+            is_submitted: newCompletedState,
+          });
+        }
+      }
+
+      // Step 3: Call backend API to complete/uncomplete
       let response;
       if (todoType === "todo") {
         if (isCurrentlyCompleted) {
@@ -484,19 +523,51 @@ export default function TodosSidenav({
         }
       }
 
+      // Step 4: Handle response
       if (response && response.success) {
-        // Refresh data from IndexedDB to ensure sync
-        await fetchData();
+        // Backend succeeded - hooks already updated IndexedDB with server response
+        // Refresh data from IndexedDB to ensure we have the latest state
+        // Use a small delay to avoid race conditions with hook updates
+        setTimeout(async () => {
+          await fetchData();
+        }, 100);
       } else {
-        // Revert optimistic update on failure
+        // Backend failed - revert IndexedDB and UI
+        console.error("[Todos Sidenav] Backend call failed, reverting changes");
+
+        // Revert IndexedDB
+        const db = getDB();
+        await db.init();
+
+        if (todoType === "todo") {
+          const todos = await db.getTodos();
+          const todo = todos.find((t: any) => t.id === todoId);
+          if (todo) {
+            await db.saveTodo({
+              ...todo,
+              is_submitted: isCurrentlyCompleted,
+            });
+          }
+        } else if (todoType === "task") {
+          const tasks = await db.getTasks();
+          const task = tasks.find((t: any) => t.id === todoId);
+          if (task) {
+            await db.saveTask({
+              ...task,
+              is_submitted: isCurrentlyCompleted,
+            });
+          }
+        }
+
+        // Revert UI
         setTodos((prev) =>
           prev.map((group, idx) =>
-            idx === dayIndex
+            idx === actualGroupIndex
               ? {
                   ...group,
                   todos: group.todos.map((todo) =>
                     todo.id === todoId
-                      ? { ...todo, completed: !todo.completed }
+                      ? { ...todo, completed: isCurrentlyCompleted }
                       : todo
                   ),
                 }
@@ -509,15 +580,47 @@ export default function TodosSidenav({
         "[Todos Sidenav] Error toggling todo/task completion:",
         error
       );
-      // Revert optimistic update on error
+
+      // Revert IndexedDB on error
+      try {
+        const db = getDB();
+        await db.init();
+
+        if (todoType === "todo") {
+          const todos = await db.getTodos();
+          const todo = todos.find((t: any) => t.id === todoId);
+          if (todo) {
+            await db.saveTodo({
+              ...todo,
+              is_submitted: isCurrentlyCompleted,
+            });
+          }
+        } else if (todoType === "task") {
+          const tasks = await db.getTasks();
+          const task = tasks.find((t: any) => t.id === todoId);
+          if (task) {
+            await db.saveTask({
+              ...task,
+              is_submitted: isCurrentlyCompleted,
+            });
+          }
+        }
+      } catch (revertError) {
+        console.error(
+          "[Todos Sidenav] Error reverting IndexedDB:",
+          revertError
+        );
+      }
+
+      // Revert UI
       setTodos((prev) =>
         prev.map((group, idx) =>
-          idx === dayIndex
+          idx === actualGroupIndex
             ? {
                 ...group,
                 todos: group.todos.map((todo) =>
                   todo.id === todoId
-                    ? { ...todo, completed: !todo.completed }
+                    ? { ...todo, completed: isCurrentlyCompleted }
                     : todo
                 ),
               }
@@ -704,50 +807,58 @@ export default function TodosSidenav({
                     </div>
 
                     <div className="space-y-1.5">
-                      {overdueTodos.map((todo) => (
-                        <div
-                          key={todo.id}
-                          onClick={() =>
-                            toggleTodoComplete(
-                              todo.groupIndex!,
-                              todo.id,
-                              todo.type
-                            )
-                          }
-                          className="group p-2 rounded-lg border-2 border-red-500 bg-red-500/10 hover:bg-red-500/20 hover:shadow-lg hover:shadow-red-500/20 transition-all duration-200 cursor-pointer"
-                        >
-                          <div className="flex items-start gap-2">
-                            <Circle className="w-4 h-4 text-red-500 group-hover:text-red-600 transition-colors flex-shrink-0 mt-0.5" />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                {todo.type === "task" ? (
-                                  <div className="flex items-center gap-1 px-1.5 py-0.5 bg-red-500/30 rounded text-[9px] font-medium text-red-600">
-                                    <FolderKanban className="w-2.5 h-2.5" />
-                                    <span className="pt-0.5">TASK</span>
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center gap-1 px-1.5 py-0.5 bg-red-500/30 rounded text-[9px] font-medium text-red-600">
-                                    <ListTodo className="w-2.5 h-2.5" />
-                                    <span className="pt-0.5">TODO</span>
-                                  </div>
-                                )}
-                              </div>
-                              <h4 className="font-roboto font-medium text-xs line-clamp-2 text-red-600 group-hover:text-red-700 transition-colors">
-                                {todo.title}
-                              </h4>
-                              <p className="text-[10px] text-red-500/80 mt-1 truncate font-roboto">
-                                {todo.project}
-                              </p>
-                              <div className="flex items-center gap-1 mt-1">
-                                <div className="w-1 h-1 rounded-full bg-red-500" />
-                                <p className="text-[10px] text-red-600 font-medium font-roboto">
-                                  {todo.time}
+                      {overdueTodos.map((todo) => {
+                        // Find the correct group index for overdue items
+                        const groupIndex = todos.findIndex(
+                          (group) => group.day === todo.day
+                        );
+                        const safeGroupIndex = groupIndex >= 0 ? groupIndex : 0;
+
+                        return (
+                          <div
+                            key={todo.id}
+                            onClick={() =>
+                              toggleTodoComplete(
+                                safeGroupIndex,
+                                todo.id,
+                                todo.type
+                              )
+                            }
+                            className="group p-2 rounded-lg border-2 border-red-500 bg-red-500/10 hover:bg-red-500/20 hover:shadow-lg hover:shadow-red-500/20 transition-all duration-200 cursor-pointer"
+                          >
+                            <div className="flex items-start gap-2">
+                              <Circle className="w-4 h-4 text-red-500 group-hover:text-red-600 transition-colors flex-shrink-0 mt-0.5" />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-1.5 mb-1">
+                                  {todo.type === "task" ? (
+                                    <div className="flex items-center gap-1 px-1.5 py-0.5 bg-red-500/30 rounded text-[9px] font-medium text-red-600">
+                                      <FolderKanban className="w-2.5 h-2.5" />
+                                      <span className="pt-0.5">TASK</span>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-1 px-1.5 py-0.5 bg-red-500/30 rounded text-[9px] font-medium text-red-600">
+                                      <ListTodo className="w-2.5 h-2.5" />
+                                      <span className="pt-0.5">TODO</span>
+                                    </div>
+                                  )}
+                                </div>
+                                <h4 className="font-roboto font-medium text-xs line-clamp-2 text-red-600 group-hover:text-red-700 transition-colors">
+                                  {todo.title}
+                                </h4>
+                                <p className="text-[10px] text-red-500/80 mt-1 truncate font-roboto">
+                                  {todo.project}
                                 </p>
+                                <div className="flex items-center gap-1 mt-1">
+                                  <div className="w-1 h-1 rounded-full bg-red-500" />
+                                  <p className="text-[10px] text-red-600 font-medium font-roboto">
+                                    {todo.time}
+                                  </p>
+                                </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}

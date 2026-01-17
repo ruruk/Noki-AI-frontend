@@ -57,4 +57,20 @@ export class CanvasServiceImpl implements CanvasService {
       `${this.baseUrl}/link-data`
     );
   }
+
+  /**
+   * Get Canvas provider information
+   * Returns Canvas integration details if connected, null otherwise
+   */
+  async getCanvasProvider(): Promise<ApiResponse<any>> {
+    return this.httpClient.get<any>(`${this.baseUrl}/provider`);
+  }
+
+  /**
+   * Delete all Canvas data
+   * Deletes all Canvas-linked projects, tasks, todos, and auth provider
+   */
+  async deleteAllCanvasData(): Promise<ApiResponse<any>> {
+    return this.httpClient.delete<any>(`${this.baseUrl}/delete-all`);
+  }
 }

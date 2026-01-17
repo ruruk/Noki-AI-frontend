@@ -86,6 +86,33 @@ export interface UserService extends BaseService {
     newPassword: string
   ): Promise<ApiResponse<void>>;
   deleteAccount(): Promise<ApiResponse<void>>;
+  getAIUsage(): Promise<ApiResponse<AIUsageStats>>;
+}
+
+export interface AIUsageStats {
+  totals: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    embedding_tokens: number;
+    total_cost_usd: number;
+  };
+  monthly: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    embedding_tokens: number;
+    cost_usd: number;
+    change_percentage: number;
+  };
+  limits: {
+    token_limit: number;
+    tokens_remaining: number;
+    tokens_used: number;
+    usage_percentage: number;
+    is_premium: boolean;
+  };
+  message_count: number;
 }
 
 export interface ProjectService extends BaseService {
@@ -354,6 +381,8 @@ export interface TimetableEvent {
 export interface CanvasService extends BaseService {
   setupCanvas(data: CanvasSetupData): Promise<ApiResponse<CanvasSetupResponse>>;
   linkCanvasData(): Promise<ApiResponse<CanvasLinkResponse>>;
+  getCanvasProvider(): Promise<ApiResponse<any>>;
+  deleteAllCanvasData(): Promise<ApiResponse<any>>;
 }
 
 export interface CanvasSetupData {

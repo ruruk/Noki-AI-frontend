@@ -20,7 +20,7 @@ export function AssignmentExplanation({
         <div className="flex items-center space-x-2">
           <BookOpen className="h-5 w-5 text-noki-primary" />
           <div className="font-poppins font-bold text-gray-100 text-lg pt-[50px]">
-            {title} test
+            {title}
           </div>
         </div>
 
